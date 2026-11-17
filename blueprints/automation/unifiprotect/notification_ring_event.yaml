@@ -1,7 +1,9 @@
 blueprint:
   name: UniFi Protect Doorbell Ring Notifications
   domain: automation
-  source_url: https://raw.githubusercontent.com/AngellusMortis/unifiprotect_blueprints/main/blueprints/automation/unifiprotect/notification_ring_event.yaml
+  source_url: https://raw.githubusercontent.com/tpaulus/unifiprotect_blueprints/main/blueprints/automation/unifiprotect/notification_ring_event.yaml
+  homeassistant:
+    min_version: "2026.4.0"
   description: |
     ## UniFi Protect Doorbell Ring Notifications
 
@@ -9,7 +11,10 @@ blueprint:
 
     ### Required Settings
 
-      - UniFi Protect Doorbell Sensor
+      - One or more UniFi Protect Doorbell event entities.
+
+    If you are updating an existing automation, replace the deprecated `binary_sensor`
+    selection with the corresponding Doorbell `event` entity.
 
     ### Optional Settings
 
@@ -36,14 +41,15 @@ blueprint:
     [3]: https://www.home-assistant.io/docs/configuration/remote/
   input:
     doorbell_sensor:
-      name: Doorbell Sensor Entity
+      name: Doorbell Event Entity
       description: >
-        The "Doorbell" sensor(s) to use.
+        The UniFi Protect "Doorbell" event entities to watch for rings.
       selector:
         entity:
-          integration: unifiprotect
-          domain: binary_sensor
-          device_class: occupancy
+          filter:
+            - integration: unifiprotect
+              domain: event
+              device_class: doorbell
           multiple: true
     lock_entity:
       name: (Optional) Door Lock or Gate Entity
@@ -179,7 +185,7 @@ variables:
   input_cooldown: !input cooldown
   input_video_cutoff: !input video_cutoff
   lovelace_view: "{{ input_lovelace_view | trim }}"
-  is_manual: "{{ 'from_state' not in trigger }}"
+  is_manual: "{{ trigger is not defined or 'to_state' not in trigger }}"
   notification_channel: |
     {% if is_manual %}
       Manual {{ input_channel }}
@@ -194,14 +200,10 @@ variables:
   lock_entity_id: "{{ input_lock_entity or '' }}"
   media_entities: '[{% for eid in device_entities(device_id) %}{%if eid.startswith(''media_player'') and not is_state(eid, ''unavailable'') %}"{{ eid }}",{% endif %}{% endfor %}]'
   media_entity_id: "{{ media_entities | default([None]) | first }}"
-  event_id: "{% if is_manual %}{{ input_debug_event_id }}{% else %}{{ state_attr(entity_id, 'event_id') }}{% endif %}"
-  video_end: "{{ states[entity_id].last_changed.isoformat() }}"
+  event_id: "{% if is_manual %}{{ input_debug_event_id }}{% else %}{{ trigger.to_state.attributes.get('event_id') }}{% endif %}"
+  video_end: "{{ (states[entity_id] if is_manual else trigger.to_state).last_changed.isoformat() }}"
   trigger_time: |
-    {% if states[entity_id] == None %}
-      None
-    {% else %}
-      {{ as_local(states[entity_id].last_changed).strftime(input_time_format) }}
-    {% endif %}
+    {{ as_local(as_datetime(video_end)).strftime(input_time_format) }}
   notification_title: "{{ device_name }}: Doorbell Ring"
   notification_tag: "{{ notification_channel.lower().replace(' ', '-') }}"
   notification_message: "{{ device_name }} was rung{% if trigger_time != None %} at {{ trigger_time }}{% endif %}."
@@ -221,10 +223,12 @@ variables:
   wait_tts_enabled: "{{ input_tts_target != '' and input_wait_tts != '' and media_entity_id != None }}"
 
 trigger:
-  - platform: state
-    entity_id: !input doorbell_sensor
-    from: "off"
-    to: "on"
+  - trigger: event.received
+    target:
+      entity_id: !input doorbell_sensor
+    options:
+      event_type:
+        - ring
 
 action:
   - service: "{{ input_notify_target_app }}"
